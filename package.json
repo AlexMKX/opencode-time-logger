@@ -1,0 +1,32 @@
+{
+  "name": "opencode-time-logger",
+  "version": "0.1.0",
+  "description": "OpenCode plugin and skill for turning chat sessions into Jira worklogs",
+  "type": "module",
+  "main": ".opencode/plugins/time-logger.js",
+  "scripts": {
+    "test": "bun test"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "jira",
+    "worklog",
+    "time-tracking",
+    "skill"
+  ],
+  "author": "AlexMKX",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexMKX/opencode-time-logger.git"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": "^1.4.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.7",
+    "@opencode-ai/sdk": "^1.4.0",
+    "@types/bun": "latest"
+  }
+}
