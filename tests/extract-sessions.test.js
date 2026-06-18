@@ -3,19 +3,26 @@ import {
   extractWorkSessions,
   toJiraDateTime,
   toJiraTimeSpent,
+  GAP_MINUTES,
+  MIN_MINUTES,
 } from "../src/extract-sessions.js";
 
-// All test timestamps use a fixed base so behavior is deterministic regardless
-// of the host timezone. We avoid asserting on time-zone-dependent string output
-// (e.g. startIso/startJira) — the algorithm-level assertions only look at
-// numeric fields (startMs, billedMinutes, etc).
-const T0 = 1781700000000; // arbitrary epoch ms
-
+// Fixed base so behavior is deterministic regardless of host timezone.
+// Assertions intentionally avoid timezone-dependent string output.
+const T0 = 1781700000000;
 const min = (n) => n * 60 * 1000;
+const mkMsg = (offsetMin, role, id) => ({
+  timeMs: T0 + min(offsetMin),
+  role,
+  id,
+});
 
-function mkMsg(offsetMin, role, id) {
-  return { timeMs: T0 + min(offsetMin), role, id };
-}
+describe("constants", () => {
+  test("gap and min are both 15 (hard-coded by design)", () => {
+    expect(GAP_MINUTES).toBe(15);
+    expect(MIN_MINUTES).toBe(15);
+  });
+});
 
 describe("extractWorkSessions", () => {
   test("empty input -> no sessions", () => {
@@ -41,22 +48,28 @@ describe("extractWorkSessions", () => {
     expect(result[0].firstUserMsgId).toBe("u1");
   });
 
-  test("gap > 10 min between user/assistant splits sessions", () => {
+  test("gap > 15 min splits sessions", () => {
     const result = extractWorkSessions([
       mkMsg(0, "user", "u1"),
       mkMsg(5, "assistant", "a1"),
-      mkMsg(20, "user", "u2"), // 15-min gap from a1
-      mkMsg(25, "assistant", "a2"),
+      mkMsg(25, "user", "u2"), // 20-min gap from a1 -> new session
+      mkMsg(30, "assistant", "a2"),
     ]);
     expect(result).toHaveLength(2);
     expect(result[0].startMs).toBe(T0);
     expect(result[0].endMs).toBe(T0 + min(5));
-    expect(result[1].startMs).toBe(T0 + min(20));
+    expect(result[1].startMs).toBe(T0 + min(25));
   });
 
-  test("gap > 10 min between two assistant messages also splits (resume-after-sleep)", () => {
-    // Reproduces the bug from the v1 algorithm: 11h between assistant msgs but
-    // no user msg in between — must still split.
+  test("gap exactly 15 min does NOT split (boundary)", () => {
+    const result = extractWorkSessions([
+      mkMsg(0, "user", "u1"),
+      mkMsg(15, "assistant", "a1"), // 15-min gap, not > 15
+    ]);
+    expect(result).toHaveLength(1);
+  });
+
+  test("overnight gap between two assistant messages still splits (resume-after-sleep)", () => {
     const result = extractWorkSessions([
       mkMsg(0, "user", "u1"),
       mkMsg(2, "assistant", "a1"),
@@ -79,12 +92,11 @@ describe("extractWorkSessions", () => {
     expect(result[0].jiraTimeSpent).toBe("15m");
   });
 
-  test("rounding up: 16min raw -> 30m billed (ceil to 15)", () => {
-    // Chain of close-spaced assistant msgs lets the session grow past 15min
-    // without crossing the 10-min gap threshold.
+  test("rounding up: 16min raw -> 30m billed", () => {
+    // Chain of close-spaced msgs stays within the 15-min gap threshold.
     const result = extractWorkSessions([
       mkMsg(0, "user", "u1"),
-      mkMsg(8, "assistant", "a1"),
+      mkMsg(10, "assistant", "a1"),
       mkMsg(16, "assistant", "a2"),
     ]);
     expect(result[0].rawMinutes).toBe(16);
@@ -92,17 +104,14 @@ describe("extractWorkSessions", () => {
     expect(result[0].jiraTimeSpent).toBe("30m");
   });
 
-  test("rounding up: 61min raw -> 75m (1h 15m) billed", () => {
+  test("rounding up: 61min raw -> 75m (1h 15m)", () => {
     const result = extractWorkSessions([
       mkMsg(0, "user", "u1"),
-      mkMsg(8, "assistant", "a1"),
-      mkMsg(16, "assistant", "a2"),
-      mkMsg(24, "assistant", "a3"),
-      mkMsg(32, "assistant", "a4"),
-      mkMsg(40, "assistant", "a5"),
-      mkMsg(48, "assistant", "a6"),
-      mkMsg(56, "assistant", "a7"),
-      mkMsg(61, "assistant", "a8"),
+      mkMsg(12, "assistant", "a1"),
+      mkMsg(24, "assistant", "a2"),
+      mkMsg(36, "assistant", "a3"),
+      mkMsg(48, "assistant", "a4"),
+      mkMsg(61, "assistant", "a5"),
     ]);
     expect(result[0].rawMinutes).toBe(61);
     expect(result[0].billedMinutes).toBe(75);
@@ -114,39 +123,50 @@ describe("extractWorkSessions", () => {
       [
         mkMsg(0, "user", "u1"),
         mkMsg(5, "assistant", "a1"),
-        mkMsg(30, "user", "u2"),
-        mkMsg(35, "assistant", "a2"),
+        mkMsg(40, "user", "u2"), // 35-min gap from a1 -> new session
+        mkMsg(45, "assistant", "a2"),
       ],
-      { sinceMs: T0 + min(20) },
+      T0 + min(20),
     );
     expect(result).toHaveLength(1);
-    expect(result[0].startMs).toBe(T0 + min(30));
-    // index is re-numbered from 0 after filtering
+    expect(result[0].startMs).toBe(T0 + min(40));
+    // index is re-numbered after filtering
     expect(result[0].index).toBe(0);
   });
 
-  test("custom gapMinutes is respected", () => {
+  test("undefined sinceMs is treated as 'no cutoff' (regression: NaN bug)", () => {
+    // The prod bug: zod's `.optional()` produced explicit-undefined args that
+    // the old options-spread plumbing then turned into NaN multipliers, which
+    // cascaded into billed_minutes: null / jira_time_spent: "NaNm".
     const result = extractWorkSessions(
-      [
-        mkMsg(0, "user", "u1"),
-        mkMsg(3, "assistant", "a1"),
-        mkMsg(7, "user", "u2"), // 4-min gap — would merge with default 10, but split with 3
-      ],
-      { gapMinutes: 3 },
+      [mkMsg(0, "user", "u1"), mkMsg(5, "assistant", "a1")],
+      undefined,
     );
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(1);
+    expect(result[0].billedMinutes).toBe(15);
+    expect(result[0].jiraTimeSpent).toBe("15m");
+    expect(Number.isNaN(result[0].billedMinutes)).toBe(false);
+  });
+
+  test("garbage sinceMs falls back to no-cutoff", () => {
+    const result = extractWorkSessions(
+      [mkMsg(0, "user", "u1"), mkMsg(5, "assistant", "a1")],
+      /** @type {any} */ (NaN),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].billedMinutes).toBe(15);
   });
 
   test("unsorted input is sorted before processing", () => {
     const result = extractWorkSessions([
-      mkMsg(20, "user", "u2"),
+      mkMsg(40, "user", "u2"),
       mkMsg(0, "user", "u1"),
       mkMsg(5, "assistant", "a1"),
-      mkMsg(25, "assistant", "a2"),
+      mkMsg(45, "assistant", "a2"),
     ]);
     expect(result).toHaveLength(2);
     expect(result[0].startMs).toBe(T0);
-    expect(result[1].startMs).toBe(T0 + min(20));
+    expect(result[1].startMs).toBe(T0 + min(40));
   });
 
   test("invalid roles are filtered out", () => {
@@ -164,7 +184,6 @@ describe("extractWorkSessions", () => {
 describe("toJiraDateTime", () => {
   test("includes milliseconds and offset without colon", () => {
     const s = toJiraDateTime(T0);
-    // Pattern: yyyy-MM-ddTHH:mm:ss.SSS[+-]HHMM
     expect(s).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{4}$/);
     expect(s).not.toContain(".000+03:00"); // offset must NOT have a colon
   });

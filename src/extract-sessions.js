@@ -2,11 +2,10 @@
  * Work-session extraction algorithm.
  *
  * Given a chronological list of chat messages (user + assistant), group them
- * into "work-sessions": contiguous stretches separated by quiet gaps. A gap
- * larger than `gapMinutes` between any two consecutive messages closes the
- * current work-session. Each work-session is then clamped to a minimum
- * duration of `minMinutes` and its billable duration is rounded up to the
- * next 15-minute increment for Jira-friendly worklog reporting.
+ * into "work-sessions": contiguous stretches separated by quiet gaps larger
+ * than GAP_MINUTES (15). Each session is then clamped to MIN_MINUTES (15) and
+ * its billable duration is rounded up to the next 15-min increment for
+ * Jira-friendly worklog reporting.
  *
  * The gap is computed between any two consecutive messages (not just
  * user->assistant), so an overnight stretch with no user reply still splits
@@ -39,28 +38,23 @@
  * @property {string} jiraTimeSpent    - "1h 15m", "30m", etc.
  */
 
-/**
- * @typedef {object} ExtractOptions
- * @property {number} [gapMinutes=10]
- * @property {number} [minMinutes=15]
- * @property {number|null} [sinceMs=null]  - drop sessions starting before this epoch-ms
- */
-
-const DEFAULTS = Object.freeze({
-  gapMinutes: 10,
-  minMinutes: 15,
-  sinceMs: null,
-});
+// Hard-coded behavior. The 15-min gap and 15-min minimum together produce
+// realistic work-sessions across observed chats (see project README). They
+// are intentionally NOT configurable via tool arguments — every prior bug
+// in this plugin came from option plumbing, not from the values themselves.
+export const GAP_MINUTES = 15;
+export const MIN_MINUTES = 15;
 
 /**
  * @param {ChatMessage[]} messages
- * @param {ExtractOptions} [options]
+ * @param {number|null} [sinceMs=null]  drop work-sessions starting before this epoch-ms
  * @returns {WorkSession[]}
  */
-export function extractWorkSessions(messages, options = {}) {
-  const { gapMinutes, minMinutes, sinceMs } = { ...DEFAULTS, ...options };
-  const gapMs = gapMinutes * 60 * 1000;
-  const minMs = minMinutes * 60 * 1000;
+export function extractWorkSessions(messages, sinceMs = null) {
+  const gapMs = GAP_MINUTES * 60 * 1000;
+  const minMs = MIN_MINUTES * 60 * 1000;
+  const cutoff =
+    typeof sinceMs === "number" && Number.isFinite(sinceMs) ? sinceMs : null;
 
   // Pre-filter to roles we care about and sort by time defensively.
   const ordered = messages
@@ -114,7 +108,7 @@ export function extractWorkSessions(messages, options = {}) {
   if (current !== null) raw.push(current);
 
   const filtered =
-    sinceMs == null ? raw : raw.filter((s) => s.startMs >= sinceMs);
+    cutoff == null ? raw : raw.filter((s) => s.startMs >= cutoff);
 
   return filtered.map((s, index) => {
     const rawMs = Math.max(0, s.endMs - s.startMs);

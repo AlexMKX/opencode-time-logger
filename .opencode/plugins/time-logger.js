@@ -13,7 +13,11 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { tool } from "@opencode-ai/plugin";
-import { extractWorkSessions } from "../../src/extract-sessions.js";
+import {
+  extractWorkSessions,
+  GAP_MINUTES,
+  MIN_MINUTES,
+} from "../../src/extract-sessions.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -38,11 +42,11 @@ export const TimeLoggerPlugin = async ({ client }) => {
     tool: {
       time_logger_extract_sessions: tool({
         description: [
-          "Extract billable work-sessions from an OpenCode chat session for Jira worklog ingestion.",
-          "Returns JSON with per-session start time in Jira's required format (yyyy-MM-dd'T'HH:mm:ss.SSSZ),",
-          "billed minutes rounded up to 15-minute increments, and a minimum of 15 minutes per session.",
-          "Sessions are split whenever the gap between any two consecutive messages exceeds gap_minutes",
-          "(default 10), which correctly handles overnight pauses even when only assistant messages bracket the gap.",
+          "Extract billable work-sessions from the current OpenCode chat for Jira worklog ingestion.",
+          "Sessions are split whenever the gap between any two consecutive messages exceeds 15 minutes",
+          "(this correctly handles overnight pauses even when only assistant messages bracket the gap).",
+          "Each session is clamped to a minimum of 15 minutes and rounded up to the next 15-minute increment.",
+          "Returns JSON with per-session start time in Jira's required format (yyyy-MM-dd'T'HH:mm:ss.SSSZ).",
           "Use the returned `start_jira` field as the `started` argument to jira_add_worklog.",
         ].join(" "),
         args: {
@@ -60,14 +64,6 @@ export const TimeLoggerPlugin = async ({ client }) => {
                 "set to max(worklog.started_epoch_ms + worklog.timeSpentSeconds*1000) " +
                 "from jira_get_worklog.",
             ),
-          gap_minutes: tool.schema
-            .number()
-            .optional()
-            .describe("Gap (in minutes) that splits work-sessions. Default 10."),
-          min_minutes: tool.schema
-            .number()
-            .optional()
-            .describe("Minimum work-session duration in minutes. Default 15."),
         },
         execute: async (args, ctx) => {
           const sessionId = args.session_id ?? ctx.sessionID;
@@ -107,11 +103,7 @@ export const TimeLoggerPlugin = async ({ client }) => {
               (m) => m !== null && typeof m.timeMs === "number",
             );
 
-          const workSessions = extractWorkSessions(messages, {
-            sinceMs: args.since_ms ?? null,
-            gapMinutes: args.gap_minutes,
-            minMinutes: args.min_minutes,
-          });
+          const workSessions = extractWorkSessions(messages, args.since_ms ?? null);
 
           const totals = {
             work_session_count: workSessions.length,
@@ -131,8 +123,8 @@ export const TimeLoggerPlugin = async ({ client }) => {
             title: meta.title,
             directory: meta.directory,
             params: {
-              gap_minutes: args.gap_minutes ?? 10,
-              min_minutes: args.min_minutes ?? 15,
+              gap_minutes: GAP_MINUTES,
+              min_minutes: MIN_MINUTES,
               since_ms: args.since_ms ?? null,
             },
             totals,

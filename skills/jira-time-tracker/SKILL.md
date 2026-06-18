@@ -131,13 +131,13 @@ Print:
 | append  | `PROJ-123` + verb                                           | 1, 2, 3 (with `since_ms`), 4, 6, 8     |
 | move    | `закрой тикет`, `close ticket`, `двигай тикет`, `transition`| adds 7 after create/append             |
 
-## Algorithm defaults (informational)
+## Algorithm (informational)
 
-- Gap between any two consecutive messages > 10 min ⇒ work-session split.
+- Gap between any two consecutive messages > 15 min ⇒ work-session split.
 - Minimum work-session = 15 min.
 - Worklog duration rounded up to nearest 15 min.
 
-Override `gap_minutes` / `min_minutes` only when the user explicitly asks.
+These values are hard-coded in the plugin. The tool exposes no knobs for them.
 
 ## What NOT to do
 

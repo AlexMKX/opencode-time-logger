@@ -70,12 +70,16 @@ Full workflow lives in `skills/jira-time-tracker/SKILL.md`.
 ## How work-sessions are computed
 
 - A work-session is a contiguous stretch of chat messages where the gap
-  between any two consecutive messages stays under 10 minutes.
-- A gap longer than 10 minutes ends the current work-session — this correctly
+  between any two consecutive messages stays under 15 minutes.
+- A gap longer than 15 minutes ends the current work-session — this correctly
   handles an overnight pause even when both adjacent messages are assistant
   messages (a resume-after-sleep would otherwise look like one giant session).
 - Each work-session is clamped to a minimum of 15 minutes and its billable
   duration is rounded up to the next 15-minute increment.
+
+Both thresholds are hard-coded constants (`GAP_MINUTES = MIN_MINUTES = 15`).
+The tool exposes no arguments to override them — every prior bug in this
+plugin came from option plumbing, not from the values themselves.
 
 ## Development
 
