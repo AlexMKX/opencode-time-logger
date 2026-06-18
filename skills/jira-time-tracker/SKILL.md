@@ -1,129 +1,135 @@
 ---
 name: jira-time-tracker
-description: Use when the user wants to create a Jira ticket, append worklogs to an existing Jira ticket, or close a Jira ticket based on the current opencode chat — triggers include "новый тикет / new ticket", an explicit "PROJ-123" key together with a verb like "add / append / log / добавь", and "закрой тикет / close ticket".
+description: Use when the user wants to create a Jira ticket, append worklogs to an existing Jira ticket, or move a Jira ticket through its workflow based on the current opencode chat — triggers include "новый тикет / new ticket", an explicit "PROJ-123" key together with a verb like "add / append / log / добавь", and "закрой тикет / close ticket / двигай тикет".
 ---
 
 # Jira Time Tracker
 
-You convert the current opencode chat into Jira activity: a new issue, fresh worklogs on an existing issue, and/or a workflow transition to a closed status. Work-session boundaries come from a deterministic plugin tool — never eyeball timestamps.
+Convert the current opencode chat into Jira activity: a new issue, fresh worklogs on an existing one, and optionally a workflow walk. Work-session boundaries come from the deterministic `time_logger_extract_sessions` tool — never eyeball timestamps.
 
-## Triggers and modes
+## Hard rule: explicit trigger required
 
-- `новый тикет` / `new ticket` → mode = **create**
-- explicit `PROJ-123` (any `[A-Z][A-Z0-9_]+-\d+`) plus a verb (add / append / log / добавь) → mode = **append**
-- `закрой тикет` / `close ticket` → also run **close** after create/append
+If the user message does not contain a clear instruction to create a ticket, append worklogs, or move a ticket, **ask** what they want. Do not act on a bare skill invocation (just the SKILL.md text loaded into the chat). Acceptable triggers:
 
-Modes combine in one user message ("новый тикет и сразу закрой").
+- create — phrases like `новый тикет`, `new ticket`, `создай тикет`
+- append — an explicit issue key (`[A-Z][A-Z0-9_]+-\d+`) together with a verb (add / append / log / добавь)
+- move — `закрой тикет`, `close ticket`, `двигай тикет`, `transition to <status>`
 
-## Tools
+When in doubt, ask. A bare `/skill jira-time-tracker` is not a trigger.
 
-- `time_logger_extract_sessions` (from this plugin) — computes work-sessions from the current chat.
-- MCP server `mcp-jira-sooperset`:
-  - read: `jira_get_issue`, `jira_get_worklog`, `jira_get_transitions`, `jira_search`
-  - write: `jira_create_issue`, `jira_add_worklog`, `jira_transition_issue`
-- `supermemory` MCP — accumulated per-project knowledge.
+## Reuse an existing ticket before creating a new one
+
+Before going into create mode, look for a ticket the user is already working on:
+
+1. Scan the current chat (and any context preserved through compaction) for explicit `[A-Z][A-Z0-9_]+-\d+` keys, links to `…/browse/<KEY>` URLs, or branch names that embed a key.
+2. Check `supermemory` for a recent `active_ticket` entry for this project / cwd.
+3. If you find candidates, ask the user: "I see PROJ-123 in context — log to it (append), or create a new ticket?" Do not silently choose.
+
+Only fall through to creating a fresh issue when no candidate exists and the user explicitly asks for a new one.
+
+## Tool choice (use the right MCP server for the job)
+
+Two Jira MCP servers may be available. Pick per task:
+
+- **Text content** (create issue, edit issue, add/edit comment, add/edit worklog) — prefer the **official Atlassian MCP** (`atlassian mcp` server: `createJiraIssue`, `editJiraIssue`, `addCommentToJiraIssue`, `addWorklogToJiraIssue`, `getJiraIssue`, `searchJiraIssuesUsingJql`). Send content as **ADF** (`contentFormat: "adf"`). ADF gives full fidelity and avoids the Markdown↔wiki conversion guesswork. If the official MCP is not available, fall back to whatever Jira MCP is present (e.g. `mcp-jira`/`sooperset`) and follow its native format (Markdown for sooperset).
+- **Workflow operations** (list transitions, transition issue) — use `mcp-jira` (`jira_get_transitions`, `jira_transition_issue`). The official MCP can only apply transitions at create time, not on demand.
+- **Agile / sprint operations** (find boards, list sprints, add issue to sprint) — use `mcp-jira` (`jira_get_agile_boards`, `jira_get_sprints_from_board`, `jira_add_issues_to_sprint`).
+- **Search by JQL** — either works; the official MCP is slightly richer.
+
+All Jira write tools are marked destructive by the server. Invoke them through `call_tool_destructive` (or the destructive variant your runtime exposes) on the first attempt — do not waste a turn trying a non-destructive caller first.
 
 ## Step 1 — Load accumulated knowledge
 
-`supermemory` `search` with `query: "jira-time-tracker config"`, `scope: "project"`. Use whatever is there:
-
-- `project_key`, `issue_type`
-- `jira_base_url` (for printing issue URLs to the user)
-- `last_known_close_status` (the status name observed on previously closed tickets in this project)
-
-If a value needed by the current mode is missing, ask the user once and persist it back with `add`, `type: "project-config"`, `scope: "project"`.
+`supermemory` `search` with `query: "jira-time-tracker config"`, `scope: "project"`. Read whatever is there (project_key, default issue_type, jira_base_url, cloudId, default board id, last_known_close_status, active_ticket). When something needed for the current mode is missing, ask once and persist it with `add`, `type: "project-config"`, `scope: "project"`.
 
 ## Step 2 — Resolve the chat session
 
-The plugin tool defaults `session_id` to the current chat session — you almost never need to pass it. Pass an explicit id only when the user references a different chat by `ses_…` id or by its URL.
+The plugin tool defaults `session_id` to the current chat. Pass an explicit id only when the user references a different chat by `ses_…` id or URL.
 
 ## Step 3 — Extract work-sessions
 
-**create** mode:
+For **create** mode:
 
 ```
 time_logger_extract_sessions {}
 ```
 
-**append** mode:
+For **append** mode, find the cutoff first:
 
-1. `jira_get_worklog(issue_key=…)`.
-2. Compute `last_logged_until_ms` = `max(started_epoch_ms + timeSpentSeconds * 1000)` across the returned worklogs. If there are no worklogs, omit `since_ms`.
+1. `jira_get_worklog(issue_key)` (or `getJiraIssue` with `fields: ["worklog"]`).
+2. Compute `last_logged_until_ms` = `max(started_epoch_ms + timeSpentSeconds * 1000)` over the existing worklogs. With no worklogs, omit `since_ms`.
 3. `time_logger_extract_sessions { since_ms: <ms> }`.
 
-The tool result is authoritative. Do not re-derive durations from the chat history yourself.
+The tool result is authoritative. Do not re-derive durations from the chat.
 
-## Step 4 — Compose Jira text (rules)
+## Step 4 — Dry-run preview before any write
 
-Jira (Cloud or Server, served through the MCP) interprets text as Jira wiki markup, not Markdown. Follow these rules for every description, comment, and worklog body:
+After you know what you're about to do, present a short preview to the user **once**:
 
-- **Plaintext.** No `**bold**`, no `*emphasis*`, no `_underline_`, no `+plus+`, no Markdown headings (`#`, `##`).
-- **Identifiers** (filenames, paths, code symbols, table names) — wrap in `{{…}}` for Jira monospace.
-- **Hyperlinks** — emit the bare URL on its own; Jira auto-links it. Never write a number alone like `MR #12` — that is unhelpful and degrades the worklog. Either include the full URL extracted from the chat context, or omit the reference and describe the change in words.
-- **Sanitize.** Do not leak internal infrastructure identifiers (hostnames, internal domains, IPs, customer names, usernames, tokens). Replace with example-style placeholders (`example.com`, `host1.example.com`, `TEST-NET-1` IPs) before sending to Jira.
-- **No emojis.** Anywhere.
+- Mode (create / append / move).
+- Target issue (existing key or "new issue in project XXX, type YYY").
+- Proposed summary + first 6–10 lines of description (create mode only).
+- Worklog plan: a compact table — index, started, billed time, one-line comment.
+- Sprint assignment (if create mode and an active sprint is detected).
 
-If you cannot find a full URL for a referenced MR/PR/issue in the chat context, do not invent one and do not write a bare `#NN`. Describe the change instead.
+Wait for `да / ok / go` before any destructive call. The preview prevents the duplicate-create / duplicate-worklog spirals seen in earlier runs.
 
 ## Step 5 — Create the issue (create mode)
 
-Compose a focused summary (≤120 chars) describing what was actually done in this chat. Compose a Markdown-free Jira-wiki description with 2–6 short bullet points. **Do not** include a "Sessions" / "Worklogs" / "Time log" section in the description — the worklogs are the source of truth for time spent.
+Compose a focused summary (≤120 chars) and a description that reflects what was actually done in this chat. Use the formatting native to the MCP you chose (ADF via the official MCP, otherwise Markdown). Pull MR / PR / issue links from the chat context as full URLs; do not write bare `#NN` references — describe the change in words if no URL is available.
 
-Call `jira_create_issue` with `project_key`, `summary`, `issue_type`, `description`. Capture the returned `key`.
+**Do not** include a "Sessions" / "Worklogs" / "Time log" block in the description. The worklogs are the source of truth for time spent.
+
+Call the create tool **once** through its destructive caller. Capture the returned `key`.
+
+### Estimates and sprint (post-create, before worklogs)
+
+Immediately after the issue is created:
+
+1. **Estimates.** If the project's issue type carries `timetracking` (Original Estimate / Remaining Estimate), set them from the extractor totals. Set Original Estimate to the total billed time across all work-sessions; set Remaining Estimate to `0m` if you are about to log everything (the work is done), otherwise to the unlogged portion. Use the official MCP's `editJiraIssue` with `fields: { "timetracking": { "originalEstimate": "Xh Ym", "remainingEstimate": "Zm" } }`. If the field is not on the screen / not configured, the edit returns an error — log it and continue.
+2. **Active sprint.** Look up the project's scrum board: `jira_get_agile_boards { project_key, board_type: "scrum", limit: 5 }`. If there is exactly one active scrum board, fetch its active sprint: `jira_get_sprints_from_board { board_id, state: "active", limit: 5 }`. If there is exactly one active sprint, **propose** to the user to add the issue to it. On confirmation: `jira_add_issues_to_sprint { sprint_id, issue_keys: <key> }`. Multiple boards or multiple active sprints — ask the user which one. No board / no active sprint — skip silently.
 
 ## Step 6 — Add worklogs
 
-For each work-session in chronological order:
+For each work-session in chronological order, call the worklog tool once. Use the value from `work_session.start_jira` as the `started` argument (it is already in `yyyy-MM-dd'T'HH:mm:ss.SSSZ`, the format both Jira MCPs require). Comment per work-session should be one specific line of what happened in that slice — you have the conversation in context, write something useful.
 
-```
-jira_add_worklog(
-  issue_key  = <key>,
-  time_spent = <work_session.jira_time_spent>,   # "15m", "1h 30m", …
-  started    = <work_session.start_jira>,         # use start_jira, NOT start_iso
-  comment    = <one-line description of what happened in this slice>,
-)
-```
+Apply the same formatting rule as Step 5 (ADF for official MCP, Markdown otherwise). Do not edit a worklog or comment more than once. If the first version looks wrong on read-back, fix it once and stop — repeated edits produce no value and pollute the history.
 
-- The `started` field MUST come from `work_session.start_jira` (Jira-required `yyyy-MM-dd'T'HH:mm:ss.SSSZ` shape). Passing `start_iso` will fail with "Invalid date format".
-- The per-session comment must reflect what actually happened in that slice — you have the conversation in context, write something specific (not "worked on stuff").
-- Apply Step 4 rules to every comment.
+## Step 7 — Walk the workflow (move mode)
 
-## Step 7 — Close the ticket (close mode)
+Goal: drive the issue along its workflow as the user requested, **without hard-coding any status name**.
 
-Goal: drive the issue to a status that the project considers closed, without hard-coding any status name.
+1. Determine the target status:
+   - If the user named one in their message, use that.
+   - Else if the user said "close ticket" / "закрой тикет" and supermemory has `last_known_close_status` for this project, target it.
+   - Else discover the project's closed status: `searchJiraIssuesUsingJql` (or `jira_search`) with `jql: "project = <KEY> AND statusCategory = Done ORDER BY resolved DESC"`, `fields: ["status"]`, `limit: 1`. Take `status.name`. Persist it to supermemory as `last_known_close_status`. Empty result — ask the user.
+2. Walk transitions, up to 5 hops:
+   - `jira_get_issue` (`fields: "status"`) — current status.
+   - If it matches the target, stop.
+   - `jira_get_transitions` — pick the transition whose `to.name` equals the target. If none matches directly, pick a transition whose `to.name` is different from the current name and is not obviously backwards (avoid names containing "reopen", "cancel", "reject", "back", "return", "вернуть").
+   - `jira_transition_issue` with that transition id.
+   - Loop.
+3. If 5 hops are not enough, stop and report the path taken plus the status you ended at. Do not silently succeed.
 
-1. If the user named a target status in their message, use that.
-2. Else if supermemory has `last_known_close_status` for this project, target it.
-3. Else discover it from the project itself:
-   ```
-   jira_search { jql: "project = <KEY> AND statusCategory = Done ORDER BY resolved DESC", limit: 1, fields: "status" }
-   ```
-   Take `status.name` from the result and persist it to supermemory as `last_known_close_status`. If the search returns nothing, ask the user for the target status name once and persist it.
-4. Walk the workflow up to 5 hops:
-   - `jira_get_issue(issue_key=…, fields="status")` → current status.
-   - If current matches the target, stop.
-   - `jira_get_transitions(issue_key=…)` → pick the transition whose `to.name` equals the target. If none directly matches, pick a transition whose `to.name` differs from the current name and does not look like a backwards move (avoid names containing "reopen", "cancel", "reject", "back").
-   - `jira_transition_issue(issue_key=…, transition_id=…)`.
-   - Repeat.
-
-If you exhaust 5 hops without reaching the target, report which status you stopped at and why; do not silently succeed.
+This whole step is "drive the ticket along its workflow", not "close it by any means". One transition step at a time, never skip statuses.
 
 ## Step 8 — Report to the user
 
 Print:
 
-- Mode(s) used.
+- Mode(s) actually executed.
 - Issue key and URL (`{jira_base_url}/browse/{key}` if known).
 - Worklog count, total billed minutes, total raw minutes.
-- For close mode: final status and the transition path taken.
+- Sprint assignment, if performed.
+- For move mode: the chain of transitions taken and the final status.
 
 ## Quick reference
 
-| Mode    | Triggers                                  | Steps run                          |
-|---------|-------------------------------------------|------------------------------------|
-| create  | `новый тикет`, `new ticket`               | 1, 2, 3, 4, 5, 6, 8                |
-| append  | `PROJ-123` + verb                         | 1, 2, 3 (with `since_ms`), 4, 6, 8 |
-| close   | `закрой тикет`, `close ticket`            | adds 7 after create/append         |
+| Mode    | Triggers                                                    | Steps run                              |
+|---------|-------------------------------------------------------------|----------------------------------------|
+| create  | `новый тикет`, `new ticket`, `создай тикет`                 | 1, 2, 3, 4, 5, 6, 8                    |
+| append  | `PROJ-123` + verb                                           | 1, 2, 3 (with `since_ms`), 4, 6, 8     |
+| move    | `закрой тикет`, `close ticket`, `двигай тикет`, `transition`| adds 7 after create/append             |
 
 ## Algorithm defaults (informational)
 
@@ -131,14 +137,17 @@ Print:
 - Minimum work-session = 15 min.
 - Worklog duration rounded up to nearest 15 min.
 
-Override `gap_minutes` / `min_minutes` only when the user explicitly asks for non-default values.
+Override `gap_minutes` / `min_minutes` only when the user explicitly asks.
 
 ## What NOT to do
 
-- Don't include a sessions/worklog/time-log block inside the issue description — Jira already shows worklogs.
-- Don't write bare `#NN` MR references. Either full URL from chat context, or describe the change without a link.
-- Don't use Markdown emphasis (`**…**`, `*…*`, `_…_`). Don't escape characters by hand — let Jira wiki parse plaintext.
-- Don't re-log work-sessions that already exist as Jira worklogs (use `since_ms` in append mode).
-- Don't create the issue before extracting sessions — you need the chat context for both description and comments.
-- Don't hard-code status names in the close step. Always discover them from the project.
-- Don't leak PII or infrastructure identifiers to Jira.
+- Don't act on a bare skill invocation. No explicit trigger ⇒ ask.
+- Don't create a new issue when there's a plausible existing one in context — propose it first.
+- Don't include a sessions / worklog / time-log block in the issue description.
+- Don't write bare `#NN` references. Full URL from chat context, or words.
+- Don't try `call_tool_write` for jira create / worklog / transition tools first — they are destructive; go straight to the destructive caller.
+- Don't edit a comment or worklog more than once.
+- Don't re-log work-sessions already in Jira worklogs (use `since_ms` in append mode).
+- Don't hard-code workflow status names. Discover them from the project.
+- Don't skip statuses — walk the workflow one transition at a time.
+- Don't leak PII or internal infrastructure identifiers (hostnames, IPs, internal domains, usernames). Replace with example placeholders before sending to Jira.

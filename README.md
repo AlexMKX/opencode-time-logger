@@ -10,11 +10,15 @@ workflow status name.
 - **Plugin** that registers a tool `time_logger_extract_sessions`. The tool
   reads the current chat through the official OpenCode SDK, groups messages
   into billable work-sessions, and returns Jira-ready JSON (durations rounded
-  up to 15 minutes, timestamps in the exact format `jira_add_worklog` requires).
-- **Skill** `jira-time-tracker` (auto-registered via the plugin) that
-  orchestrates the Jira side using the
-  [`mcp-jira-sooperset`](https://github.com/sooperset/mcp-atlassian) MCP server
-  and a `supermemory` MCP for per-project knowledge.
+  up to 15 minutes, timestamps in the exact format Jira worklog tools require).
+- **Skill** `jira-time-tracker` (auto-registered via the plugin). The skill
+  picks the right MCP server per task:
+  - text content (issue, comment, worklog) — prefers the official **Atlassian
+    MCP** with ADF for full fidelity;
+  - workflow transitions and Agile / sprint operations — uses
+    [`mcp-jira`](https://github.com/sooperset/mcp-atlassian);
+  - per-project knowledge (project key, default issue type, last known
+    "closed" status, active ticket, etc.) — `supermemory`.
 
 ## Install
 
@@ -33,22 +37,35 @@ OpenCode pulls the package on the next start. The skill becomes visible as
 
 ### Prerequisites
 
-- A reachable Jira instance via the `mcp-jira-sooperset` MCP server.
-- A `supermemory` MCP server for storing per-project config
-  (`project_key`, `issue_type`, `last_known_close_status`, etc).
+- At least one Jira MCP server reachable from OpenCode. The skill prefers the
+  official Atlassian MCP for text content and falls back to `mcp-jira`
+  (Sooperset) for workflow / sprint operations. Either alone works; both
+  available gets you full fidelity.
+- A `supermemory` MCP server for accumulated per-project knowledge
+  (`project_key`, `issue_type`, `last_known_close_status`, `active_ticket`,
+  default board id, etc).
 
 ## Usage
 
 In any chat:
 
 - `новый тикет: …` / `new ticket: …` — create an issue with worklogs for
-  every work-session in the chat.
+  every work-session in the chat. The skill will offer to assign the issue
+  to the active sprint (if exactly one is detected) and to fill Original /
+  Remaining Estimate from the extractor totals.
 - `PROJ-123 добавь / append / log: …` — add worklogs for sessions newer than
   the last logged time on the ticket.
-- `закрой тикет PROJ-123` / `close ticket PROJ-123` — discover the project's
-  closed status dynamically and walk the workflow to it.
+- `закрой тикет PROJ-123` / `двигай тикет PROJ-123 в <status>` — walk the
+  workflow one transition at a time, discovering the project's closed
+  status dynamically when needed.
 
-The skill defines the full workflow; see `skills/jira-time-tracker/SKILL.md`.
+The skill never acts on a bare invocation: with no clear trigger it asks
+what you want. If a ticket is mentioned in the recent chat context it offers
+to log into it rather than silently creating a new one. Before any
+destructive write (create / worklog / transition) it shows a dry-run
+preview and waits for confirmation.
+
+Full workflow lives in `skills/jira-time-tracker/SKILL.md`.
 
 ## How work-sessions are computed
 
