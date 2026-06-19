@@ -1,0 +1,10 @@
+{
+  "productId": "opencode-time-logger",
+  "type": "plugin",
+  "displayName": "OpenCode Time Logger",
+  "description": "Turns an OpenCode chat into Jira activity: automatically extracts billable work-sessions from the chat history, rounds durations up to 15-minute increments, and lets you create Jira issues, append worklogs, and drive tickets through workflow transitions — all from natural-language triggers inside the chat, with a dry-run preview before any write.",
+  "repoUrl": "https://github.com/AlexMKX/opencode-time-logger",
+  "homepageUrl": "https://github.com/AlexMKX/opencode-time-logger",
+  "tags": ["jira", "time-tracking", "worklog", "productivity", "billing", "plugin", "mcp"],
+  "installation": "Add the plugin to `~/.config/opencode/opencode.json`:\n\n```json\n{\n  \"plugin\": [\n    \"opencode-time-logger@git+https://github.com/AlexMKX/opencode-time-logger.git\"\n  ]\n}\n```\n\nOpenCode pulls the package on the next start. The skill `jira-time-tracker` and the tool `time_logger_extract_sessions` become available automatically.\n\n### Prerequisites\n\n- At least one Jira MCP server reachable from OpenCode (official Atlassian MCP and/or [`mcp-jira`](https://github.com/sooperset/mcp-atlassian)).\n- A `supermemory` MCP server for per-project knowledge (project key, issue type, last known closed status, active ticket, etc.)."
+}
