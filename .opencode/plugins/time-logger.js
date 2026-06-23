@@ -18,6 +18,7 @@ import {
   GAP_MINUTES,
   MIN_MINUTES,
 } from "../../src/extract-sessions.js";
+import { resolveRootSessionId } from "../../src/resolve-root-session.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -66,12 +67,20 @@ export const TimeLoggerPlugin = async ({ client }) => {
             ),
         },
         execute: async (args, ctx) => {
-          const sessionId = args.session_id ?? ctx.sessionID;
-          if (!sessionId) {
+          // When the caller explicitly passes session_id, use it verbatim
+          // (the skill may pass a specific ses_... as an override).
+          // Otherwise walk parentID upward to find the root chat session,
+          // which is the one that contains all the messages we want to bill —
+          // subagents run in child sessions that are empty on their own.
+          const rawId = args.session_id ?? ctx.sessionID;
+          if (!rawId) {
             throw new Error(
               "time_logger_extract_sessions: no session_id provided and no current sessionID in tool context",
             );
           }
+          const sessionId = args.session_id
+            ? rawId
+            : await resolveRootSessionId(client, rawId);
 
           const sessionMeta = await client.session.get({
             path: { id: sessionId },
