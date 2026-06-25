@@ -19,6 +19,7 @@ import {
   MIN_MINUTES,
 } from "../../src/extract-sessions.js";
 import { resolveRootSessionId } from "../../src/resolve-root-session.js";
+import { argsSchema } from "../../src/tool-args-schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -50,35 +51,23 @@ export const TimeLoggerPlugin = async ({ client }) => {
           "Returns JSON with per-session start time in Jira's required format (yyyy-MM-dd'T'HH:mm:ss.SSSZ).",
           "Use the returned `start_jira` field as the `started` argument to jira_add_worklog.",
         ].join(" "),
-        args: {
-          session_id: tool.schema
-            .string()
-            .optional()
-            .describe(
-              "OpenCode session id (ses_...). Defaults to the current chat session.",
-            ),
-          since_ms: tool.schema
-            .number()
-            .optional()
-            .describe(
-              "Drop work-sessions starting before this epoch-ms. For append mode: " +
-                "set to max(worklog.started_epoch_ms + worklog.timeSpentSeconds*1000) " +
-                "from jira_get_worklog.",
-            ),
-        },
+        args: argsSchema,
         execute: async (args, ctx) => {
-          // When the caller explicitly passes session_id, use it verbatim
+          // Normalize session_id: schema rejects empty strings, but guard
+          // defensively in case validation is bypassed or the arg is whitespace.
+          const explicit = (args.session_id ?? "").trim();
+          const rawId = explicit || ctx.sessionID;
+          if (!rawId) {
+            throw new Error(
+              "time_logger_extract_sessions: no usable session id (args.session_id was empty and tool context has no sessionID)",
+            );
+          }
+          // When the caller explicitly passes a valid session_id, use it verbatim
           // (the skill may pass a specific ses_... as an override).
           // Otherwise walk parentID upward to find the root chat session,
           // which is the one that contains all the messages we want to bill —
           // subagents run in child sessions that are empty on their own.
-          const rawId = args.session_id ?? ctx.sessionID;
-          if (!rawId) {
-            throw new Error(
-              "time_logger_extract_sessions: no session_id provided and no current sessionID in tool context",
-            );
-          }
-          const sessionId = args.session_id
+          const sessionId = explicit
             ? rawId
             : await resolveRootSessionId(client, rawId);
 
@@ -112,7 +101,14 @@ export const TimeLoggerPlugin = async ({ client }) => {
               (m) => m !== null && typeof m.timeMs === "number",
             );
 
-          const workSessions = extractWorkSessions(messages, args.since_ms ?? null);
+          // Normalize since_ms: treat 0 / negative / missing as "no cutoff".
+          // Schema already rejects non-positive values, but guard defensively.
+          const sinceMs =
+            typeof args.since_ms === "number" && args.since_ms > 0
+              ? args.since_ms
+              : null;
+
+          const workSessions = extractWorkSessions(messages, sinceMs);
 
           const totals = {
             work_session_count: workSessions.length,
@@ -134,7 +130,7 @@ export const TimeLoggerPlugin = async ({ client }) => {
             params: {
               gap_minutes: GAP_MINUTES,
               min_minutes: MIN_MINUTES,
-              since_ms: args.since_ms ?? null,
+              since_ms: sinceMs,
             },
             totals,
             work_sessions: workSessions.map((s) => ({
