@@ -44,7 +44,7 @@ All Jira write tools are marked destructive by the server. Invoke them through `
 
 ## Step 2 — Resolve the chat session
 
-The plugin tool defaults `session_id` to the current chat. Pass an explicit id only when the user references a different chat by `ses_…` id or URL.
+The plugin tool always infers the current chat session automatically (and walks parentID upward to the root when invoked from a subagent). There is no `session_id` argument — you cannot point it at a different chat.
 
 ## Step 3 — Extract work-sessions
 

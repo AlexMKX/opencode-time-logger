@@ -5,8 +5,9 @@
  *   1. Register the bundled `jira-time-tracker` skill directory so OpenCode
  *      auto-discovers it (no symlinks, no user-side config edits).
  *   2. Register the `time_logger_extract_sessions` tool. The tool reads the
- *      current (or explicitly-named) chat session via the OpenCode SDK,
- *      groups messages into work-sessions, and returns Jira-ready JSON.
+ *      current chat session via the OpenCode SDK (inferred from ctx.sessionID,
+ *      walked to the root parent for subagent contexts), groups messages into
+ *      work-sessions, and returns Jira-ready JSON.
  */
 
 import path from "node:path";
@@ -50,26 +51,20 @@ export const TimeLoggerPlugin = async ({ client }) => {
           "Each session is clamped to a minimum of 15 minutes and rounded up to the next 15-minute increment.",
           "Returns JSON with per-session start time in Jira's required format (yyyy-MM-dd'T'HH:mm:ss.SSSZ).",
           "Use the returned `start_jira` field as the `started` argument to jira_add_worklog.",
+          "The session is always inferred from the current chat (auto-resolved to the root parent if invoked from a subagent).",
+          "There is no `session_id` argument — you cannot point it at a different chat.",
         ].join(" "),
         args: argsSchema,
         execute: async (args, ctx) => {
-          // Normalize session_id: schema rejects empty strings, but guard
-          // defensively in case validation is bypassed or the arg is whitespace.
-          const explicit = (args.session_id ?? "").trim();
-          const rawId = explicit || ctx.sessionID;
-          if (!rawId) {
+          // Always infer the session from the tool context — no override arg.
+          // Walk parentID upward to the root chat session so subagent contexts
+          // (which run in empty child sessions) bill against the right session.
+          if (!ctx.sessionID) {
             throw new Error(
-              "time_logger_extract_sessions: no usable session id (args.session_id was empty and tool context has no sessionID)",
+              "time_logger_extract_sessions: tool context has no sessionID — cannot infer the chat session",
             );
           }
-          // When the caller explicitly passes a valid session_id, use it verbatim
-          // (the skill may pass a specific ses_... as an override).
-          // Otherwise walk parentID upward to find the root chat session,
-          // which is the one that contains all the messages we want to bill —
-          // subagents run in child sessions that are empty on their own.
-          const sessionId = explicit
-            ? rawId
-            : await resolveRootSessionId(client, rawId);
+          const sessionId = await resolveRootSessionId(client, ctx.sessionID);
 
           const sessionMeta = await client.session.get({
             path: { id: sessionId },

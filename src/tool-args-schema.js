@@ -3,6 +3,9 @@
  *
  * Extracted into a standalone module so tests can import and validate the
  * schema without pulling in the OpenCode plugin runtime (@opencode-ai/plugin).
+ *
+ * session_id is intentionally absent: the tool always infers the current chat
+ * session from ctx.sessionID and walks parentID upward to the root.
  */
 
 import { z } from "zod";
@@ -13,18 +16,6 @@ import { z } from "zod";
  * with z.object(argsSchema) directly.
  */
 export const argsSchema = {
-  session_id: z
-    .string()
-    .trim()
-    .regex(/^ses_[A-Za-z0-9]+$/)
-    .optional()
-    .describe(
-      "OpenCode session id (must match ^ses_…$). " +
-        "OMIT this parameter entirely if you don't have a specific session id to target — " +
-        "do NOT pass an empty string. " +
-        "Defaults to the current chat session (auto-resolved to the root parent if invoked from a subagent).",
-    ),
-
   since_ms: z
     .number()
     .int()

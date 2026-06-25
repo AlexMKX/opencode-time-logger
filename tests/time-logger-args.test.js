@@ -4,6 +4,9 @@
  * Approach B: argsSchema is exported from src/tool-args-schema.js (a pure zod
  * module with no OpenCode runtime dependencies), so these tests run without
  * any plugin runtime setup.
+ *
+ * session_id is intentionally not tested — it was removed from the schema.
+ * The tool now always infers the session from ctx.sessionID.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -12,28 +15,6 @@ import { argsSchema, argsZ } from "../src/tool-args-schema.js";
 
 // Sanity: argsSchema is a plain object; argsZ is the wrapped z.object.
 const schema = argsZ;
-
-describe("argsSchema — session_id", () => {
-  test("empty object is valid (both args are optional)", () => {
-    expect(schema.safeParse({}).success).toBe(true);
-  });
-
-  test("valid ses_abc123 passes", () => {
-    expect(schema.safeParse({ session_id: "ses_abc123" }).success).toBe(true);
-  });
-
-  test("empty string is rejected", () => {
-    expect(schema.safeParse({ session_id: "" }).success).toBe(false);
-  });
-
-  test("arbitrary garbage string is rejected (no ses_ prefix)", () => {
-    expect(schema.safeParse({ session_id: "garbage" }).success).toBe(false);
-  });
-
-  test("whitespace-only string is rejected (trim leaves empty, regex fails)", () => {
-    expect(schema.safeParse({ session_id: "   " }).success).toBe(false);
-  });
-});
 
 describe("argsSchema — since_ms", () => {
   test("since_ms: 0 is rejected (must be positive)", () => {
@@ -53,14 +34,9 @@ describe("argsSchema — since_ms", () => {
   });
 });
 
-describe("argsSchema — both fields together", () => {
-  test("both valid args pass", () => {
-    expect(
-      schema.safeParse({
-        session_id: "ses_XYZ789",
-        since_ms: 1782372673964,
-      }).success,
-    ).toBe(true);
+describe("argsSchema — structure", () => {
+  test("empty object is valid (since_ms is optional)", () => {
+    expect(schema.safeParse({}).success).toBe(true);
   });
 
   test("argsSchema export is a plain object (not a ZodObject)", () => {
