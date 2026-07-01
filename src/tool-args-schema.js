@@ -22,10 +22,12 @@ export const argsSchema = {
     .positive()
     .optional()
     .describe(
-      "Drop work-sessions starting before this epoch-ms. For append mode: " +
-        "set to max(worklog.started_epoch_ms + worklog.timeSpentSeconds*1000) " +
-        "from jira_get_worklog. " +
-        "Must be a positive epoch-ms; OMIT this parameter if you have no cutoff — do NOT pass 0.",
+      "Exclude messages at or before this epoch-ms. NORMALLY OMIT THIS: the tool " +
+        "keeps a per-session cursor (the end of its last extraction in this chat) " +
+        "and applies it automatically, so append mode needs no argument. Pass an " +
+        "explicit value ONLY to re-log a slice whose extract advanced the cursor " +
+        "but never reached Jira (e.g. a cancelled preview). An explicit value " +
+        "overrides the auto-cursor. Must be a positive epoch-ms — do NOT pass 0.",
     ),
 };
 

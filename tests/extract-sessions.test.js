@@ -134,6 +134,42 @@ describe("extractWorkSessions", () => {
     expect(result[0].index).toBe(0);
   });
 
+  test("cutoff inside a continuous session keeps the post-cutoff continuation", () => {
+    // One uninterrupted session 0->30 (every gap <= 15 min). The cursor sits at
+    // minute 10 (already logged in a prior extract). The old session-level
+    // filter (`startMs >= cutoff`) dropped the whole session because it starts
+    // at 0; the message-level cutoff must keep the work done after minute 10.
+    const result = extractWorkSessions(
+      [
+        mkMsg(0, "user", "u1"),
+        mkMsg(10, "assistant", "a1"),
+        mkMsg(20, "user", "u2"),
+        mkMsg(30, "assistant", "a2"),
+      ],
+      T0 + min(10),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].startMs).toBe(T0 + min(20));
+    expect(result[0].endMs).toBe(T0 + min(30));
+  });
+
+  test("cutoff is exclusive: the boundary message itself is not re-billed", () => {
+    // Cursor == timestamp of the last already-logged message (minute 10).
+    // That exact message must be excluded; the continuation opens at minute 20.
+    const result = extractWorkSessions(
+      [
+        mkMsg(0, "user", "u1"),
+        mkMsg(10, "user", "u2"), // exactly at the cursor -> excluded
+        mkMsg(20, "user", "u3"),
+        mkMsg(25, "assistant", "a1"),
+      ],
+      T0 + min(10),
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0].startMs).toBe(T0 + min(20));
+    expect(result[0].firstUserMsgId).toBe("u3");
+  });
+
   test("undefined sinceMs is treated as 'no cutoff' (regression: NaN bug)", () => {
     // The prod bug: zod's `.optional()` produced explicit-undefined args that
     // the old options-spread plumbing then turned into NaN multipliers, which

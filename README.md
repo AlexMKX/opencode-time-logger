@@ -53,8 +53,11 @@ In any chat:
   every work-session in the chat. The skill will offer to assign the issue
   to the active sprint (if exactly one is detected) and to fill Original /
   Remaining Estimate from the extractor totals.
-- `PROJ-123 добавь / append / log: …` — add worklogs for sessions newer than
-  the last logged time on the ticket.
+- `PROJ-123 добавь / append / log: …` — add worklogs for work done since this
+  session's last extraction. The tool keeps a per-session cursor (read back from
+  its own prior outputs in the chat), so appending from the same session never
+  re-logs already-billed time — and parallel sessions on the same ticket don't
+  interfere with each other's cursors.
 - `закрой тикет PROJ-123` / `двигай тикет PROJ-123 в <status>` — walk the
   workflow one transition at a time, discovering the project's closed
   status dynamically when needed.

@@ -20,6 +20,7 @@ import {
   MIN_MINUTES,
 } from "../../src/extract-sessions.js";
 import { resolveRootSessionId } from "../../src/resolve-root-session.js";
+import { resolveCursorFromMessages } from "../../src/resolve-cursor.js";
 import { argsSchema } from "../../src/tool-args-schema.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -51,6 +52,8 @@ export const TimeLoggerPlugin = async ({ client }) => {
           "Each session is clamped to a minimum of 15 minutes and rounded up to the next 15-minute increment.",
           "Returns JSON with per-session start time in Jira's required format (yyyy-MM-dd'T'HH:mm:ss.SSSZ).",
           "Use the returned `start_jira` field as the `started` argument to jira_add_worklog.",
+          "The tool keeps a per-session cursor: it reads back its own prior outputs from this chat and, unless you pass an explicit since_ms, returns only work done since the last extraction in this session.",
+          "Normally call it with no arguments in both create and append mode.",
           "The session is always inferred from the current chat (auto-resolved to the root parent if invoked from a subagent).",
           "There is no `session_id` argument — you cannot point it at a different chat.",
         ].join(" "),
@@ -96,12 +99,18 @@ export const TimeLoggerPlugin = async ({ client }) => {
               (m) => m !== null && typeof m.timeMs === "number",
             );
 
-          // Normalize since_ms: treat 0 / negative / missing as "no cutoff".
-          // Schema already rejects non-positive values, but guard defensively.
-          const sinceMs =
+          // Resolve the cutoff. An explicit since_ms always wins (escape hatch:
+          // re-log a slice whose extract advanced the cursor but never reached
+          // Jira). Otherwise default to the auto-cursor read back from this
+          // session's own prior extract outputs, so we only re-bill work done
+          // since the last extraction. Schema already rejects non-positive
+          // values, but guard defensively.
+          const explicitSinceMs =
             typeof args.since_ms === "number" && args.since_ms > 0
               ? args.since_ms
               : null;
+          const cursorMs = resolveCursorFromMessages(items);
+          const sinceMs = explicitSinceMs ?? cursorMs;
 
           const workSessions = extractWorkSessions(messages, sinceMs);
 
@@ -125,7 +134,13 @@ export const TimeLoggerPlugin = async ({ client }) => {
             params: {
               gap_minutes: GAP_MINUTES,
               min_minutes: MIN_MINUTES,
+              // Effective cutoff actually applied, plus where it came from.
               since_ms: sinceMs,
+              since_ms_source: explicitSinceMs
+                ? "explicit"
+                : cursorMs != null
+                  ? "auto_cursor"
+                  : "none",
             },
             totals,
             work_sessions: workSessions.map((s) => ({

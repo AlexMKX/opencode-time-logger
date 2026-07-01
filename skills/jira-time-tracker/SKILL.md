@@ -48,19 +48,27 @@ The plugin tool always infers the current chat session automatically (and walks 
 
 ## Step 3 — Extract work-sessions
 
-For **create** mode:
+In both modes, call it with no arguments:
 
 ```
 time_logger_extract_sessions {}
 ```
 
-For **append** mode, find the cutoff first:
-
-1. `jira_get_worklog(issue_key)` (or `getJiraIssue` with `fields: ["worklog"]`).
-2. Compute `last_logged_until_ms` = `max(started_epoch_ms + timeSpentSeconds * 1000)` over the existing worklogs. With no worklogs, omit `since_ms`.
-3. `time_logger_extract_sessions { since_ms: <ms> }`.
+The tool keeps its own per-session cursor: it reads back its prior outputs from
+this chat's history and only returns work done **since the last extraction in
+this session**. You do not compute a cutoff from Jira — that would be wrong when
+the same ticket is worked on from several sessions in parallel (another
+session's worklog is none of this session's business). Check `params.since_ms`
+and `params.since_ms_source` in the result to see the cursor that was applied
+(`auto_cursor` = resolved from history, `none` = first extraction, `explicit` =
+you passed one).
 
 The tool result is authoritative. Do not re-derive durations from the chat.
+
+**Re-logging a missed slice.** The cursor advances on every extract, even if the
+worklog never reached Jira (e.g. you cancelled the preview). If a slice was
+extracted but never logged, pass `time_logger_extract_sessions { since_ms: <ms> }`
+explicitly to re-include it — an explicit `since_ms` overrides the auto-cursor.
 
 ## Step 4 — Dry-run preview before any write
 
@@ -128,7 +136,7 @@ Print:
 | Mode    | Triggers                                                    | Steps run                              |
 |---------|-------------------------------------------------------------|----------------------------------------|
 | create  | `новый тикет`, `new ticket`, `создай тикет`                 | 1, 2, 3, 4, 5, 6, 8                    |
-| append  | `PROJ-123` + verb                                           | 1, 2, 3 (with `since_ms`), 4, 6, 8     |
+| append  | `PROJ-123` + verb                                           | 1, 2, 3 (auto-cursor), 4, 6, 8         |
 | move    | `закрой тикет`, `close ticket`, `двигай тикет`, `transition`| adds 7 after create/append             |
 
 ## Algorithm (informational)
@@ -147,7 +155,7 @@ These values are hard-coded in the plugin. The tool exposes no knobs for them.
 - Don't write bare `#NN` references. Full URL from chat context, or words.
 - Don't try `call_tool_write` for jira create / worklog / transition tools first — they are destructive; go straight to the destructive caller.
 - Don't edit a comment or worklog more than once.
-- Don't re-log work-sessions already in Jira worklogs (use `since_ms` in append mode).
+- Don't compute `since_ms` from Jira worklogs — the tool's own per-session cursor handles append mode automatically. Only pass `since_ms` to re-log a slice whose extract advanced the cursor but never reached Jira.
 - Don't hard-code workflow status names. Discover them from the project.
 - Don't skip statuses — walk the workflow one transition at a time.
 - Don't leak PII or internal infrastructure identifiers (hostnames, IPs, internal domains, usernames). Replace with example placeholders before sending to Jira.

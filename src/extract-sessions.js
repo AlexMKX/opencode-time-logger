@@ -47,7 +47,11 @@ export const MIN_MINUTES = 15;
 
 /**
  * @param {ChatMessage[]} messages
- * @param {number|null} [sinceMs=null]  drop work-sessions starting before this epoch-ms
+ * @param {number|null} [sinceMs=null]  exclude messages at or before this epoch-ms
+ *   (the cursor is the end of an already-logged session, so it is exclusive: the
+ *   boundary message was already billed). Filtering at the message level — rather
+ *   than dropping whole sessions by startMs — lets a session that began before the
+ *   cursor but continued past it still yield its post-cursor continuation.
  * @returns {WorkSession[]}
  */
 export function extractWorkSessions(messages, sinceMs = null) {
@@ -56,9 +60,12 @@ export function extractWorkSessions(messages, sinceMs = null) {
   const cutoff =
     typeof sinceMs === "number" && Number.isFinite(sinceMs) ? sinceMs : null;
 
-  // Pre-filter to roles we care about and sort by time defensively.
+  // Pre-filter to roles we care about, drop everything at or before the cursor,
+  // then sort by time defensively. The cutoff is applied here (message level) so
+  // a continuous session straddling the cursor keeps only its later portion.
   const ordered = messages
     .filter((m) => m && (m.role === "user" || m.role === "assistant"))
+    .filter((m) => cutoff == null || m.timeMs > cutoff)
     .slice()
     .sort((a, b) => a.timeMs - b.timeMs);
 
@@ -107,10 +114,7 @@ export function extractWorkSessions(messages, sinceMs = null) {
   }
   if (current !== null) raw.push(current);
 
-  const filtered =
-    cutoff == null ? raw : raw.filter((s) => s.startMs >= cutoff);
-
-  return filtered.map((s, index) => {
+  return raw.map((s, index) => {
     const rawMs = Math.max(0, s.endMs - s.startMs);
     const rawMinutes = Math.round((rawMs / 60000) * 100) / 100;
     const billedMs = Math.max(rawMs, minMs);
