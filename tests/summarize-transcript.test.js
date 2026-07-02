@@ -169,18 +169,32 @@ describe("summarizeTranscript", () => {
     expect(out.summary.length).toBeGreaterThan(0);
   });
 
-  test("external abort signal stops summarization promptly", async () => {
+  test("external abort during a pass stops summarization + aborts temp", async () => {
     const client = hangingClient();
     const ac = new AbortController();
-    const p = summarizeTranscript(client, {
+    // Abort after the temp session is created and the prompt is hanging.
+    setTimeout(() => ac.abort(), 15);
+    const out = await summarizeTranscript(client, {
       text: "short",
       directory: "/p",
       passTimeoutMs: 60000,
       signal: ac.signal,
     });
-    ac.abort();
-    const out = await p;
     expect(out.timedOut).toBe(1);
     expect(client.calls.aborted).toEqual(["tmp_1"]);
+  });
+
+  test("abort before any work does not hang and creates nothing to abort", async () => {
+    const client = hangingClient();
+    const ac = new AbortController();
+    ac.abort(); // already aborted
+    const out = await summarizeTranscript(client, {
+      text: "short",
+      directory: "/p",
+      passTimeoutMs: 60000,
+      signal: ac.signal,
+    });
+    expect(out.timedOut).toBe(1);
+    expect(client.calls.aborted).toEqual([]); // never created a temp session
   });
 });

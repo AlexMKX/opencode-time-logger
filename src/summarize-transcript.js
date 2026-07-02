@@ -126,10 +126,13 @@ async function summarizeOnce(
   client,
   { directory, system, text, focus, model, signal, timeoutMs = PASS_TIMEOUT_MS },
 ) {
-  const created = await client.session.create({
-    query: { directory },
-    body: { title: TEMP_TITLE_PREFIX },
-  });
+  // Even creating the temp session can hang if the server is wedged — bound it
+  // too, so there is no unguarded await anywhere on this path.
+  const created = await withDeadline(
+    client.session.create({ query: { directory }, body: { title: TEMP_TITLE_PREFIX } }),
+    timeoutMs,
+    signal,
+  );
   const tempId = created?.data?.id;
   if (!tempId) throw new Error("summarizeOnce: failed to create temp session");
 
