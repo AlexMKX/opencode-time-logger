@@ -22,6 +22,7 @@ import {
 import { resolveRootSessionId } from "../../src/resolve-root-session.js";
 import { resolveCursorFromMessages } from "../../src/resolve-cursor.js";
 import { argsSchema } from "../../src/tool-args-schema.js";
+import { createReferSubchatTool } from "./refer-subchat.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
@@ -44,6 +45,8 @@ export const TimeLoggerPlugin = async ({ client }) => {
     },
 
     tool: {
+      // refer_subchat: cross-project-isolated chat summary/grep (own module).
+      ...createReferSubchatTool(client),
       time_logger_extract_sessions: tool({
         description: [
           "Extract billable work-sessions from the current OpenCode chat for Jira worklog ingestion.",
