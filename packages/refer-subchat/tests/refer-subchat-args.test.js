@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { argsZ } from "../src/refer-subchat-args.js";
+import { argsZ } from "../src/args.js";
 
 describe("refer_subchat args schema", () => {
   test("all fields optional -> empty object valid (listing mode)", () => {

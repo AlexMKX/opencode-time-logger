@@ -22,25 +22,32 @@ import {
 import { resolveRootSessionId } from "../../src/resolve-root-session.js";
 import { resolveCursorFromMessages } from "../../src/resolve-cursor.js";
 import { argsSchema } from "../../src/tool-args-schema.js";
-import { createReferSubchatTool } from "./refer-subchat.js";
+import { createReferSubchatTool } from "../../packages/refer-subchat/src/tool.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
-const SKILLS_DIR = path.join(PACKAGE_ROOT, "skills");
+// Skill directories to auto-register. The refer-subchat skill lives inside its
+// own package folder (that package is intended to be extracted into a
+// standalone OpenCode plugin), so it is registered as a separate path.
+const SKILLS_DIRS = [
+  path.join(PACKAGE_ROOT, "skills"),
+  path.join(PACKAGE_ROOT, "packages", "refer-subchat", "skills"),
+];
 
 /** @type {import("@opencode-ai/plugin").Plugin} */
 export const TimeLoggerPlugin = async ({ client }) => {
   return {
     config: async (config) => {
-      // Auto-register our bundled skills directory.
-      if (!fs.existsSync(SKILLS_DIR)) return;
+      // Auto-register our bundled skills directories.
       // OpenCode config shape uses `skills.paths` (mirrors superpowers).
       // Cast through any to avoid coupling to private types.
       const cfg = /** @type {any} */ (config);
       cfg.skills = cfg.skills || {};
       cfg.skills.paths = cfg.skills.paths || [];
-      if (!cfg.skills.paths.includes(SKILLS_DIR)) {
-        cfg.skills.paths.push(SKILLS_DIR);
+      for (const dir of SKILLS_DIRS) {
+        if (fs.existsSync(dir) && !cfg.skills.paths.includes(dir)) {
+          cfg.skills.paths.push(dir);
+        }
       }
     },
 

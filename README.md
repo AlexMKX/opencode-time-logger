@@ -107,7 +107,10 @@ Guarantees:
   model from the **same provider as your main model**, so a referenced chat's
   content does not silently cross to a different vendor.
 
-Full guidance lives in `skills/refer-subchat/SKILL.md`.
+Full guidance lives in `packages/refer-subchat/skills/refer-subchat/SKILL.md`.
+The whole feature is self-contained under `packages/refer-subchat/` (tool, pure
+logic, skill, tests) so it can be extracted into its own OpenCode plugin;
+`packages/refer-subchat/plugin.js` is the ready standalone entry.
 
 ## How work-sessions are computed
 

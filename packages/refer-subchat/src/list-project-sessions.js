@@ -10,7 +10,7 @@
  */
 
 import { TEMP_TITLE_PREFIX } from "./summarize-transcript.js";
-import { toIso } from "./extract-sessions.js";
+import { toIso } from "./iso.js";
 
 /**
  * @param {Array<any>} sessions   - client.session.list() data (Array<Session>)

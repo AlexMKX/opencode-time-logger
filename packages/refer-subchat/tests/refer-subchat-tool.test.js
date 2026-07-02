@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createReferSubchatTool } from "../.opencode/plugins/refer-subchat.js";
+import { createReferSubchatTool } from "../src/tool.js";
 
 // A fake OpenCode client. `sessions` maps id -> { projectID, directory, parentID, title }.
 // `messages` maps id -> session-messages items. Records temp-session lifecycle.

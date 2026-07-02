@@ -25,13 +25,13 @@
  */
 
 import { tool } from "@opencode-ai/plugin";
-import { resolveRootSessionId } from "../../src/resolve-root-session.js";
-import { flattenTranscript } from "../../src/flatten-transcript.js";
-import { keywordWindows, renderWindows } from "../../src/keyword-windows.js";
-import { resolveSummaryModel } from "../../src/resolve-summary-model.js";
-import { listProjectSessions } from "../../src/list-project-sessions.js";
-import { summarizeTranscript } from "../../src/summarize-transcript.js";
-import { argsSchema } from "../../src/refer-subchat-args.js";
+import { resolveRootSessionId } from "./resolve-root-session.js";
+import { flattenTranscript } from "./flatten-transcript.js";
+import { keywordWindows, renderWindows } from "./keyword-windows.js";
+import { resolveSummaryModel } from "./resolve-summary-model.js";
+import { listProjectSessions } from "./list-project-sessions.js";
+import { summarizeTranscript } from "./summarize-transcript.js";
+import { argsSchema } from "./args.js";
 
 /** Resolve the current project id from the tool context's session. */
 async function currentProjectId(client, ctxSessionId) {
