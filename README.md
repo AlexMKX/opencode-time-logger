@@ -19,6 +19,11 @@ workflow status name.
     [`mcp-jira`](https://github.com/sooperset/mcp-atlassian);
   - per-project knowledge (project key, default issue type, last known
     "closed" status, active ticket, etc.) — `supermemory`.
+- **Tool** `refer_subchat` + **skill** `refer-subchat` — reference *another*
+  chat in the **same project** without loading its transcript into your
+  context. The tool summarizes the referenced chat in-process (in a throwaway
+  session) and returns only the summary, so pulling from a huge chat is cheap.
+  See [Refer subchat](#refer-subchat) below.
 
 ## Install
 
@@ -69,6 +74,43 @@ destructive write (create / worklog / transition) it shows a dry-run
 preview and waits for confirmation.
 
 Full workflow lives in `skills/jira-time-tracker/SKILL.md`.
+
+## Refer subchat
+
+`refer_subchat` lets an agent recall what happened in a *different* chat of the
+current project without dragging that (possibly huge) transcript into its own
+context.
+
+- **Discover** — call with no arguments to get a listing of the project's chats
+  (`id`, `title`, `updated_iso`).
+- **Reference** — call again with a `session_id` from that listing:
+  - default → an in-process **summary** of that chat;
+  - `keywords: […]` → the summary **plus** the ±3 lines around each
+    case-insensitive substring hit;
+  - `lines_only: true` (with keywords) → **only** those context windows, no
+    model call.
+
+Guarantees:
+
+- **Project isolation is enforced by the tool.** The current project is derived
+  from the tool context (never an argument); any `session_id` from another
+  project is rejected. Matching is by `projectID`, so git worktrees of one
+  project still count as the same project.
+- **The transcript never reaches the calling agent.** Summarization runs in a
+  throwaway session (tools disabled, hard summarizer prompt), which is always
+  deleted afterwards and hidden from the discovery listing.
+- **Large chats** are summarized with automatic multi-pass map-reduce (map
+  passes run concurrently, bounded, so wall-clock scales with the slowest few
+  rather than the sum), using a
+  cheap pinned model (config `small_model`, else the cheapest suitable model,
+  else the OpenCode default). When picking automatically it prefers a cheap
+  model from the **same provider as your main model**, so a referenced chat's
+  content does not silently cross to a different vendor.
+
+Full guidance lives in `packages/refer-subchat/skills/refer-subchat/SKILL.md`.
+The whole feature is self-contained under `packages/refer-subchat/` (tool, pure
+logic, skill, tests) so it can be extracted into its own OpenCode plugin;
+`packages/refer-subchat/plugin.js` is the ready standalone entry.
 
 ## How work-sessions are computed
 
