@@ -30,6 +30,35 @@ export const TEMP_TITLE_PREFIX = "[refer-subchat-tmp]";
 // 40+ minutes. On timeout we abort the temp session server-side and move on.
 export const PASS_TIMEOUT_MS = 120000;
 
+// How many summarization passes run concurrently. Map passes are independent
+// (one temp session each), so wall-clock on a big chat drops from sum-of-passes
+// to ceil(passes / N). Kept modest to avoid provider rate-limits and a burst of
+// temp sessions. A stalled pass no longer blocks the others (only its own slot).
+export const MAP_CONCURRENCY = 4;
+
+/**
+ * Map an async fn over items with bounded concurrency, preserving input order.
+ * @template T, R
+ * @param {T[]} items
+ * @param {number} limit
+ * @param {(item: T, index: number) => Promise<R>} fn
+ * @returns {Promise<R[]>}
+ */
+async function pMapBounded(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  const n = Math.max(1, Math.min(limit, items.length));
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) break;
+      results[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: n }, worker));
+  return results;
+}
+
 const MAP_SYSTEM =
   "You are a transcript summarizer. You are given part of a chat transcript " +
   "between a user and an AI coding assistant. Write a dense, factual summary of " +
@@ -213,6 +242,7 @@ export async function summarizeTranscript(client, opts) {
     maxReduceDepth = 3,
     signal,
     passTimeoutMs = PASS_TIMEOUT_MS,
+    concurrency = MAP_CONCURRENCY,
   } = opts;
 
   if (typeof text !== "string" || text.trim().length === 0) {
@@ -252,28 +282,30 @@ export async function summarizeTranscript(client, opts) {
     };
   }
 
-  // Map: summarize each chunk (stalled chunks become an explicit placeholder).
-  const partials = [];
-  for (let i = 0; i < chunks.length; i++) {
-    if (signal?.aborted) break;
-    const s = await runPass(MAP_SYSTEM, `Part ${i + 1} of ${chunks.length}:\n\n${chunks[i]}`);
-    partials.push(
-      `--- Part ${i + 1} summary ---\n${s ?? "(this part timed out and was skipped)"}`,
-    );
-  }
+  // Map: summarize chunks concurrently (each in its own temp session), order
+  // preserved. A stalled/aborted chunk degrades to a placeholder without
+  // blocking the rest.
+  const mapped = await pMapBounded(chunks, concurrency, (chunk, i) =>
+    signal?.aborted
+      ? null
+      : runPass(MAP_SYSTEM, `Part ${i + 1} of ${chunks.length}:\n\n${chunk}`),
+  );
+  const partials = mapped.map(
+    (s, i) => `--- Part ${i + 1} summary ---\n${s ?? "(this part timed out and was skipped)"}`,
+  );
 
-  // Reduce: fold partial summaries, recursing if still over budget.
+  // Reduce: fold partial summaries, recursing if still over budget. The chunks
+  // within a level are independent too, so fold them concurrently.
   let reduced = partials.join("\n\n");
   let depth = 0;
   while (reduced.length > maxChars && depth < maxReduceDepth && !signal?.aborted) {
     const reChunks = chunkText(reduced, maxChars);
     if (reChunks.length <= 1) break;
-    const next = [];
-    for (const c of reChunks) {
-      const s = await runPass(REDUCE_SYSTEM, c);
-      next.push(s ?? c); // on timeout keep the pre-reduce text rather than lose it
-    }
-    reduced = next.join("\n\n");
+    const folded = await pMapBounded(reChunks, concurrency, (c) =>
+      signal?.aborted ? null : runPass(REDUCE_SYSTEM, c),
+    );
+    // On timeout keep the pre-reduce text rather than lose it.
+    reduced = folded.map((s, i) => s ?? reChunks[i]).join("\n\n");
     depth += 1;
   }
 

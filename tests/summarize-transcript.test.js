@@ -169,6 +169,42 @@ describe("summarizeTranscript", () => {
     expect(out.summary.length).toBeGreaterThan(0);
   });
 
+  test("map phase runs concurrently, bounded, order preserved", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let n = 0;
+    const client = {
+      session: {
+        create: async () => ({ data: { id: `tmp_${++n}` } }),
+        prompt: async ({ body }) => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise((r) => setTimeout(r, 20));
+          inFlight -= 1;
+          // Echo the input verbatim so the "--- Part N summary ---" markers
+          // survive into the final fold; ordering is then observable there.
+          return { data: { parts: [{ type: "text", text: body.parts[0].text }] } };
+        },
+        delete: async () => ({ data: true }),
+      },
+    };
+    // 6 chunks, concurrency 3, single final fold (maxReduceDepth 0).
+    const text = Array.from({ length: 6 }, (_, i) => "x".repeat(40) + i).join("\n");
+    const out = await summarizeTranscript(client, {
+      text,
+      directory: "/p",
+      maxChars: 60,
+      concurrency: 3,
+      maxReduceDepth: 0,
+    });
+    expect(out.chunks).toBe(6);
+    expect(maxInFlight).toBeGreaterThan(1); // actually parallel
+    expect(maxInFlight).toBeLessThanOrEqual(3); // but bounded
+    // final summary reflects parts 1..6 in input order despite concurrent map
+    const order = [...out.summary.matchAll(/Part (\d+) summary/g)].map((m) => Number(m[1]));
+    expect(order).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
   test("external abort during a pass stops summarization + aborts temp", async () => {
     const client = hangingClient();
     const ac = new AbortController();

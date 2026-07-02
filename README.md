@@ -99,7 +99,9 @@ Guarantees:
 - **The transcript never reaches the calling agent.** Summarization runs in a
   throwaway session (tools disabled, hard summarizer prompt), which is always
   deleted afterwards and hidden from the discovery listing.
-- **Large chats** are summarized with automatic multi-pass map-reduce, using a
+- **Large chats** are summarized with automatic multi-pass map-reduce (map
+  passes run concurrently, bounded, so wall-clock scales with the slowest few
+  rather than the sum), using a
   cheap pinned model (config `small_model`, else the cheapest suitable model,
   else the OpenCode default). When picking automatically it prefers a cheap
   model from the **same provider as your main model**, so a referenced chat's
