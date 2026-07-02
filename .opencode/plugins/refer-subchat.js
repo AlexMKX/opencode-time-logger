@@ -181,16 +181,23 @@ export function createReferSubchatTool(client) {
           ]);
           const model = resolveSummaryModel(config, providers);
 
-          const { summary, passes, chunks } = await summarizeTranscript(client, {
-            text,
-            directory,
-            model,
-            focus: keywords.length ? keywords.join(", ") : undefined,
-          });
+          const { summary, passes, chunks, timedOut } = await summarizeTranscript(
+            client,
+            {
+              text,
+              directory,
+              model,
+              focus: keywords.length ? keywords.join(", ") : undefined,
+              // Wire the tool's abort signal so cancelling the parent turn (or a
+              // per-pass timeout) actually tears summarization down instead of
+              // hanging the tool — and the whole agent turn — indefinitely.
+              signal: ctx.abort,
+            },
+          );
 
           ctx.metadata?.({
-            title: `summarized ${chunks} chunk(s) in ${passes} pass(es)`,
-            metadata: { passes, chunks, window_count: windows.length },
+            title: `summarized ${chunks} chunk(s) in ${passes} pass(es)${timedOut ? `, ${timedOut} timed out` : ""}`,
+            metadata: { passes, chunks, timed_out: timedOut, window_count: windows.length },
           });
 
           return JSON.stringify(
@@ -203,6 +210,7 @@ export function createReferSubchatTool(client) {
                 : "(default)",
               passes,
               chunks,
+              timed_out: timedOut,
               summary,
               keywords,
               window_count: windows.length,

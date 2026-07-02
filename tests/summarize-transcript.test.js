@@ -110,4 +110,77 @@ describe("summarizeTranscript", () => {
     expect(out.summary).toBe("OK");
     expect(client.calls.delete).toEqual(["tmp_1"]);
   });
+
+  // A client whose prompt never resolves — simulates a stalled model stream.
+  function hangingClient() {
+    const calls = { aborted: [], deleted: [] };
+    let n = 0;
+    return {
+      calls,
+      session: {
+        create: async () => ({ data: { id: `tmp_${++n}` } }),
+        prompt: () => new Promise(() => {}), // never settles
+        abort: async ({ path }) => { calls.aborted.push(path.id); return { data: true }; },
+        delete: async ({ path }) => { calls.deleted.push(path.id); return { data: true }; },
+      },
+    };
+  }
+
+  test("single stalled pass times out, aborts + deletes temp, degrades", async () => {
+    const client = hangingClient();
+    const out = await summarizeTranscript(client, {
+      text: "short",
+      directory: "/p",
+      passTimeoutMs: 30,
+    });
+    expect(out.timedOut).toBe(1);
+    expect(out.summary).toContain("timed out");
+    expect(client.calls.aborted).toEqual(["tmp_1"]); // stream stopped server-side
+    expect(client.calls.deleted).toEqual(["tmp_1"]); // temp cleaned up
+  });
+
+  test("map-reduce: a stalled chunk is skipped, others still summarized", async () => {
+    // First prompt hangs, the rest reply — verify one timeout doesn't sink all.
+    const calls = { deleted: [], aborted: [] };
+    let n = 0;
+    const client = {
+      calls,
+      session: {
+        create: async () => ({ data: { id: `tmp_${++n}` } }),
+        prompt: ({ path }) =>
+          path.id === "tmp_1"
+            ? new Promise(() => {})
+            : Promise.resolve({ data: { parts: [{ type: "text", text: "P" }] } }),
+        abort: async ({ path }) => { calls.aborted.push(path.id); return { data: true }; },
+        delete: async ({ path }) => { calls.deleted.push(path.id); return { data: true }; },
+      },
+    };
+    const text = Array.from({ length: 5 }, (_, i) => "x".repeat(40) + i).join("\n");
+    const out = await summarizeTranscript(client, {
+      text,
+      directory: "/p",
+      maxChars: 60,
+      passTimeoutMs: 30,
+    });
+    expect(out.timedOut).toBeGreaterThanOrEqual(1);
+    expect(client.calls.aborted).toContain("tmp_1");
+    // still produced a summary from the surviving chunks
+    expect(typeof out.summary).toBe("string");
+    expect(out.summary.length).toBeGreaterThan(0);
+  });
+
+  test("external abort signal stops summarization promptly", async () => {
+    const client = hangingClient();
+    const ac = new AbortController();
+    const p = summarizeTranscript(client, {
+      text: "short",
+      directory: "/p",
+      passTimeoutMs: 60000,
+      signal: ac.signal,
+    });
+    ac.abort();
+    const out = await p;
+    expect(out.timedOut).toBe(1);
+    expect(client.calls.aborted).toEqual(["tmp_1"]);
+  });
 });

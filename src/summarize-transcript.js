@@ -24,6 +24,12 @@ import { chunkText, DEFAULT_MAX_CHARS } from "./chunk-text.js";
 
 export const TEMP_TITLE_PREFIX = "[refer-subchat-tmp]";
 
+// Hard ceiling per summarization pass. A single stalled model stream must never
+// hang the whole tool (and therefore the parent agent turn) forever — observed
+// in the wild: a haiku stream stuck mid-pass left refer_subchat "running" for
+// 40+ minutes. On timeout we abort the temp session server-side and move on.
+export const PASS_TIMEOUT_MS = 120000;
+
 const MAP_SYSTEM =
   "You are a transcript summarizer. You are given part of a chat transcript " +
   "between a user and an AI coding assistant. Write a dense, factual summary of " +
@@ -50,8 +56,60 @@ function replyText(resp) {
     .trim();
 }
 
+/** Sentinel thrown when a pass exceeds PASS_TIMEOUT_MS or the caller aborts. */
+export class PassTimeoutError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PassTimeoutError";
+  }
+}
+
+/** Our deadline OR a fetch torn down by the abort signal — both are "give up". */
+function isCancellation(err) {
+  return err instanceof PassTimeoutError || err?.name === "AbortError";
+}
+
+/**
+ * Race a promise against a hard timeout and an optional external abort signal.
+ * On timeout/abort the losing promise is left to settle on its own (we can't
+ * truly cancel an unknown promise), but the caller regains control immediately.
+ * @template T
+ * @param {Promise<T>} promise
+ * @param {number} ms
+ * @param {AbortSignal|undefined} signal
+ * @returns {Promise<T>}
+ */
+function withDeadline(promise, ms, signal) {
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const finish = (fn) => (v) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", onAbort);
+      fn(v);
+    };
+    const ok = finish(resolve);
+    const fail = finish(reject);
+    const onAbort = () => fail(new PassTimeoutError("summarization pass aborted by caller"));
+    const timer = setTimeout(
+      () => fail(new PassTimeoutError(`summarization pass exceeded ${ms}ms`)),
+      ms,
+    );
+    if (signal) {
+      if (signal.aborted) return onAbort();
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
+    promise.then(ok, fail);
+  });
+}
+
 /**
  * Run one summarization pass in a fresh temp session, always cleaning it up.
+ *
+ * Bounded by PASS_TIMEOUT_MS and the optional external signal. On timeout/abort
+ * the temp session is aborted server-side (to stop a stalled model stream) and
+ * then deleted, and a PassTimeoutError is thrown for the caller to handle.
  *
  * @param {object} client - OpenCode SDK client
  * @param {object} opts
@@ -60,9 +118,14 @@ function replyText(resp) {
  * @param {string} opts.text            - the content to summarize
  * @param {string} [opts.focus]         - optional keyword focus hint
  * @param {{ providerID: string, modelID: string }|null} [opts.model]
+ * @param {AbortSignal} [opts.signal]   - external cancel (e.g. tool ctx.abort)
+ * @param {number} [opts.timeoutMs=PASS_TIMEOUT_MS]
  * @returns {Promise<string>}
  */
-async function summarizeOnce(client, { directory, system, text, focus, model }) {
+async function summarizeOnce(
+  client,
+  { directory, system, text, focus, model, signal, timeoutMs = PASS_TIMEOUT_MS },
+) {
   const created = await client.session.create({
     query: { directory },
     body: { title: TEMP_TITLE_PREFIX },
@@ -81,18 +144,42 @@ async function summarizeOnce(client, { directory, system, text, focus, model }) 
     };
     if (model) body.model = model;
 
-    const resp = await client.session.prompt({
-      path: { id: tempId },
-      query: { directory },
-      body,
-    });
-    return replyText(resp);
-  } finally {
-    try {
-      await client.session.delete({
+    const resp = await withDeadline(
+      client.session.prompt({
         path: { id: tempId },
         query: { directory },
-      });
+        body,
+        // Best-effort: pass the signal to the underlying fetch too, so the
+        // request is torn down where the SDK honors it.
+        ...(signal ? { signal } : {}),
+      }),
+      timeoutMs,
+      signal,
+    );
+    return replyText(resp);
+  } catch (err) {
+    // A stalled/aborted stream: stop it server-side so it doesn't keep burning
+    // tokens after we've given up on it. Fire-and-forget, bounded. Covers both
+    // our own deadline (PassTimeoutError) and a fetch aborted via the signal.
+    if (isCancellation(err)) {
+      try {
+        await withDeadline(
+          client.session.abort({ path: { id: tempId }, query: { directory } }),
+          10000,
+          undefined,
+        );
+      } catch {
+        // ignore — cleanup delete below still runs
+      }
+    }
+    throw err;
+  } finally {
+    try {
+      await withDeadline(
+        client.session.delete({ path: { id: tempId }, query: { directory } }),
+        10000,
+        undefined,
+      );
     } catch {
       // Best-effort cleanup; a leaked temp session is filtered from discovery
       // by its title prefix anyway.
@@ -121,71 +208,79 @@ export async function summarizeTranscript(client, opts) {
     focus,
     maxChars = DEFAULT_MAX_CHARS,
     maxReduceDepth = 3,
+    signal,
+    passTimeoutMs = PASS_TIMEOUT_MS,
   } = opts;
 
   if (typeof text !== "string" || text.trim().length === 0) {
-    return { summary: "(empty transcript — nothing to summarize)", passes: 0, chunks: 0 };
+    return { summary: "(empty transcript — nothing to summarize)", passes: 0, chunks: 0, timedOut: 0 };
   }
+
+  const common = { directory, model, focus, signal, timeoutMs: passTimeoutMs };
+  let passes = 0;
+  let timedOut = 0;
+
+  // Run one pass, counting it; a PassTimeoutError degrades to null (the caller
+  // substitutes a placeholder) so a single stalled stream can't sink the whole
+  // summary. Non-timeout errors still propagate.
+  const runPass = async (system, chunk) => {
+    passes += 1;
+    try {
+      return await summarizeOnce(client, { ...common, system, text: chunk });
+    } catch (err) {
+      if (isCancellation(err)) {
+        timedOut += 1;
+        return null;
+      }
+      throw err;
+    }
+  };
 
   const chunks = chunkText(text, maxChars);
 
   // Single-pass fast path.
   if (chunks.length <= 1) {
-    const summary = await summarizeOnce(client, {
-      directory,
-      system: MAP_SYSTEM,
-      text: chunks[0] ?? text,
-      focus,
-      model,
-    });
-    return { summary, passes: 1, chunks: 1 };
+    const summary = await runPass(MAP_SYSTEM, chunks[0] ?? text);
+    return {
+      summary: summary ?? "(summarization timed out before any output was produced)",
+      passes,
+      chunks: 1,
+      timedOut,
+    };
   }
 
-  // Map: summarize each chunk.
-  let passes = 0;
+  // Map: summarize each chunk (stalled chunks become an explicit placeholder).
   const partials = [];
   for (let i = 0; i < chunks.length; i++) {
-    const s = await summarizeOnce(client, {
-      directory,
-      system: MAP_SYSTEM,
-      text: `Part ${i + 1} of ${chunks.length}:\n\n${chunks[i]}`,
-      focus,
-      model,
-    });
-    passes += 1;
-    partials.push(`--- Part ${i + 1} summary ---\n${s}`);
+    if (signal?.aborted) break;
+    const s = await runPass(MAP_SYSTEM, `Part ${i + 1} of ${chunks.length}:\n\n${chunks[i]}`);
+    partials.push(
+      `--- Part ${i + 1} summary ---\n${s ?? "(this part timed out and was skipped)"}`,
+    );
   }
 
   // Reduce: fold partial summaries, recursing if still over budget.
   let reduced = partials.join("\n\n");
   let depth = 0;
-  while (reduced.length > maxChars && depth < maxReduceDepth) {
+  while (reduced.length > maxChars && depth < maxReduceDepth && !signal?.aborted) {
     const reChunks = chunkText(reduced, maxChars);
     if (reChunks.length <= 1) break;
     const next = [];
     for (const c of reChunks) {
-      const s = await summarizeOnce(client, {
-        directory,
-        system: REDUCE_SYSTEM,
-        text: c,
-        focus,
-        model,
-      });
-      passes += 1;
-      next.push(s);
+      const s = await runPass(REDUCE_SYSTEM, c);
+      next.push(s ?? c); // on timeout keep the pre-reduce text rather than lose it
     }
     reduced = next.join("\n\n");
     depth += 1;
   }
 
-  const summary = await summarizeOnce(client, {
-    directory,
-    system: REDUCE_SYSTEM,
-    text: reduced,
-    focus,
-    model,
-  });
-  passes += 1;
-
-  return { summary, passes, chunks: chunks.length };
+  const summary = await runPass(REDUCE_SYSTEM, reduced);
+  return {
+    // If the final fold timed out, fall back to the concatenated partials so the
+    // caller still gets usable content instead of nothing.
+    summary: summary ?? reduced,
+    passes,
+    chunks: chunks.length,
+    timedOut,
+  };
 }
