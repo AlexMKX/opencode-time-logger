@@ -209,8 +209,9 @@ describe("skills", () => {
 });
 
 describe("V2 entry", () => {
-  test("index.js default-exports a V2 plugin object", () => {
+  test("index.js default-exports one object for both generations", () => {
     expect(plugin.id).toBe("opencode-time-logger");
     expect(typeof plugin.setup).toBe("function");
+    expect(typeof plugin.server).toBe("function");
   });
 });

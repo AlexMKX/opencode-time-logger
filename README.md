@@ -52,8 +52,10 @@ The same package works on OpenCode 2. Use the plural `plugins` key:
 }
 ```
 
-OpenCode 1 loads `main` (`.opencode/plugins/time-logger.js`); OpenCode 2 loads
-the root `index.js` (`src/v2/`). Both run the same tool cores. Differences on 2:
+The package entry (`index.js`) carries both generations: OpenCode 2 calls its
+`setup` (`src/v2/`), OpenCode 1 (>= 1.18.29) its `server`, which loads the V1
+entry `.opencode/plugins/time-logger.js`. Both run the same tool cores.
+Differences on 2:
 
 - OpenCode 2 gives plugins only the post-compaction window of a chat, so the
   plugin records every message's timestamp in its own storage as the chat
