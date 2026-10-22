@@ -40,6 +40,32 @@ Add to your `~/.config/opencode/opencode.json`:
 OpenCode pulls the package on the next start. The skill becomes visible as
 `jira-time-tracker` and the tool as `time_logger_extract_sessions`.
 
+### OpenCode 2
+
+The same package works on OpenCode 2. Use the plural `plugins` key:
+
+```json
+{
+  "plugins": [
+    "opencode-time-logger@git+https://github.com/AlexMKX/opencode-time-logger.git"
+  ]
+}
+```
+
+OpenCode 1 loads `main` (`.opencode/plugins/time-logger.js`); OpenCode 2 loads
+the root `index.js` (`src/v2/`). Both run the same tool cores. Differences on 2:
+
+- OpenCode 2 gives plugins only the post-compaction window of a chat, so the
+  plugin records every message's timestamp in its own storage as the chat
+  happens and merges that into the extraction. Work done before the plugin was
+  installed is visible only while it is still in the window.
+- The extraction cursor is kept in plugin storage as well (the extractor's own
+  output may have been compacted away). Chats migrated from OpenCode 1 still
+  pick up the cursor from their history.
+- `refer_subchat` summarizes through `ctx.generate.text` instead of a
+  throwaway session, and reads the referenced chat's current window (including
+  its compaction summary).
+
 ### Prerequisites
 
 - At least one Jira MCP server reachable from OpenCode. The skill prefers the

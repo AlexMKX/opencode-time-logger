@@ -108,7 +108,7 @@ function isCancellation(err) {
  * @param {AbortSignal|undefined} signal
  * @returns {Promise<T>}
  */
-function withDeadline(promise, ms, signal) {
+export function withDeadline(promise, ms, signal) {
   return new Promise((resolve, reject) => {
     let done = false;
     const finish = (fn) => (v) => {
@@ -230,6 +230,9 @@ async function summarizeOnce(
  * @param {string} [opts.focus]                  - keyword focus hint
  * @param {number} [opts.maxChars=DEFAULT_MAX_CHARS]
  * @param {number} [opts.maxReduceDepth=3]       - safety cap on reduce recursion
+ * @param {(client: object, pass: object) => Promise<string>} [opts.summarizeOnce]
+ *   one pass (system + text -> summary). Defaults to a throwaway session on
+ *   `client`; the OpenCode 2 entry passes a session-less ctx.generate.text pass.
  * @returns {Promise<{ summary: string, passes: number, chunks: number }>}
  */
 export async function summarizeTranscript(client, opts) {
@@ -243,6 +246,7 @@ export async function summarizeTranscript(client, opts) {
     signal,
     passTimeoutMs = PASS_TIMEOUT_MS,
     concurrency = MAP_CONCURRENCY,
+    summarizeOnce: runOnce = summarizeOnce,
   } = opts;
 
   if (typeof text !== "string" || text.trim().length === 0) {
@@ -259,7 +263,7 @@ export async function summarizeTranscript(client, opts) {
   const runPass = async (system, chunk) => {
     passes += 1;
     try {
-      return await summarizeOnce(client, { ...common, system, text: chunk });
+      return await runOnce(client, { ...common, system, text: chunk });
     } catch (err) {
       if (isCancellation(err)) {
         timedOut += 1;
