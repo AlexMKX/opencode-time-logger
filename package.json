@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "OpenCode plugin and skill for turning chat sessions into Jira worklogs",
   "type": "module",
-  "main": ".opencode/plugins/time-logger.js",
+  "main": "index.js",
   "scripts": {
     "test": "bun test"
   },
