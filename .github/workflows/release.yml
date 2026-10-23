@@ -1,0 +1,60 @@
+# Release on every push to main (i.e. a merged PR) whose package.json version
+# has no GitHub release yet. Bump "version" in the PR to cut a release; pushes
+# that keep the version (docs, chores) are no-ops. An existing
+# vX.Y.Z tag is reused as-is, otherwise the tag is created on the pushed commit.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          tag="v${version}"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.version.outputs.skip == 'false'
+        with:
+          bun-version: latest
+
+      - name: Test
+        if: steps.version.outputs.skip == 'false'
+        run: |
+          bun install --frozen-lockfile
+          bun test
+
+      - name: Create release
+        if: steps.version.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --generate-notes --latest
